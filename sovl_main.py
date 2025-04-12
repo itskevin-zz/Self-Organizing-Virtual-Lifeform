@@ -16,53 +16,19 @@ import uuid
 import os
 from threading import Lock
 
+from src.core.system_config import get_config_value, load_config, ConfigurationError
+from src.core.system_logging import ThreadSafeLogger
+from src.data import (
+    load_jsonl,
+    validate_data_format,
+    tokenize_and_map,
+    map_sequence,
+    _update_token_map_memory,
+    InsufficientDataError
+)
+
 class InsufficientDataError(Exception):
     pass
-
-def load_jsonl(file_path, min_entries=10):
-    data = []
-    error_log = []
-
-    try:
-        # Attempt to open and read the file
-        with open(file_path, 'r') as file:
-            for line_number, line in enumerate(file, start=1):
-                try:
-                    entry = json.loads(line.strip())
-                    # Validate the structure of each entry
-                    if not isinstance(entry.get("prompt"), str) or not isinstance(entry.get("response"), str):
-                        error_log.append(f"Line {line_number}: Missing or invalid 'prompt' or 'response'. Skipping.")
-                        continue
-                    # Append valid entry
-                    data.append({"prompt": entry["prompt"], "completion": entry["response"]})
-                except json.JSONDecodeError as e:
-                    error_log.append(f"Line {line_number}: JSON decode error: {e}. Skipping.")
-        
-        # Print warnings if any
-        if error_log:
-            print("Warnings encountered during data loading:")
-            for error in error_log:
-                print(f"WARNING: {error}")
-            # Optionally, write errors to a file
-            with open("data_load_errors.log", "w") as log_file:
-                log_file.write("\n".join(error_log))
-        
-        # Check if the minimum threshold is met
-        if len(data) < min_entries:
-            print(f"ERROR: Loaded only {len(data)} valid entries from {file_path}. Minimum required: {min_entries}.")
-            raise InsufficientDataError(f"Aborting: Insufficient valid data entries. Check 'data_load_errors.log' for details.")
-    
-    except FileNotFoundError:
-        print(f"CRITICAL: File not found: {file_path}. Aborting process.")
-        sys.exit(1)  # Exit the process cleanly with a failure status
-    
-    except Exception as e:
-        print(f"CRITICAL: Unexpected error: {e}. Aborting process.")
-        sys.exit(1)  # Exit the process cleanly with a failure status
-
-    # Return validated data
-    print(f"INFO: Data Validation: {len(data)} entries loaded successfully.")
-    return data
 
 def calculate_confidence_score(logits, generated_ids):
     if not logits or not isinstance(logits, (list, tuple)) or len(logits) == 0 or len(logits) != len(generated_ids):
@@ -93,23 +59,8 @@ if not TRAIN_DATA:
     print("Error: No data loaded from sample_log.jsonl!")
 
 # Load config and set global variables
-with open("config.json", "r") as f:
-    config = json.load(f)
-
-def get_config_value(config, key, default=None):
-    if isinstance(config, dict):
-        keys = key.split('.')
-        value = config
-        for k in keys:
-            value = value.get(k, {})
-            if not isinstance(value, dict) and k != keys[-1]:
-                return default
-        if isinstance(value, dict) and not value:
-            print(f"Warning: '{key}' missing or empty, using {default}")
-            return default
-        return value if value != {} else default
-    print(f"Warning: '{key}' not found, using {default}")
-    return default
+config = load_config()
+logger = ThreadSafeLogger()
 
 # Core Model Config
 core_config = config.get("core_config", {})
@@ -336,59 +287,6 @@ class CuriosityPressure:
 
     def should_erupt(self, threshold):
         return self.value > threshold and random.random() < 0.3
-
-class ThreadSafeLogger:
-    def __init__(self, filename="log.jsonl"):
-        self.filename = filename
-        self.lock = Lock()
-
-    def write(self, data):
-        if "error" in data or "warning" in data:  # Identify errors or warnings
-            data["is_error_prompt"] = True  # Flag as system error prompt
-            data["conversation_id"] = data.get("conversation_id", str(uuid.uuid4()))  # Unique ID if not provided
-        try:
-            with self.lock:
-                with open(self.filename, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(data) + "\n")
-        except (IOError, TypeError, ValueError) as e:
-            print(f"Logging failed: {e}")
-            raise
-
-    def read(self):
-        data = []
-        try:
-            with self.lock:
-                with open(self.filename, "r", encoding="utf-8") as f:
-                    for line in f:
-                        data.append(json.loads(line.strip()))
-            return data
-        except FileNotFoundError:
-            return []
-        except Exception as e:
-            print(f"Log read failed: {e}")
-            raise
-
-    def read(self):
-        data = []
-        try:
-            with self.lock:
-                with open(self.filename, "r", encoding="utf-8") as f:
-                    for line in f:
-                        data.append(json.loads(line.strip()))
-            return data
-        except FileNotFoundError:
-            return []
-        except Exception as e:
-            print(f"Log read failed: {e}")
-            raise
-
-    def clear(self):
-        try:
-            with self.lock:
-                open(self.filename, "w").close()
-        except Exception as e:
-            print(f"Log clear failed: {e}")
-            raise
 
 class SOVLSystem:
     def __init__(self):
